@@ -98,4 +98,13 @@ type Netlinker interface {
 
 	// GetHardwareAddr returns device MAC address
 	GetHardwareAddr() (net.HardwareAddr, error)
+
+	// SendEth sends an Ethernet packet
+	SendEth(pkt []byte) error
+
+	// RecvEthHandle sets recieve Ethernet packet callback function
+	RecvEthHandle(func(pkt []byte) error)
+
+	// TryPoll tries to receive one Ethernet packet and returns true if one was
+	TryPoll() (bool, error)
 }
