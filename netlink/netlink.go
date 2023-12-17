@@ -105,6 +105,6 @@ type Netlinker interface {
 	// RecvEthHandle sets recieve Ethernet packet callback function
 	RecvEthHandle(func(pkt []byte) error)
 
-	// TryPoll tries to receive one Ethernet packet and returns true if one was
-	TryPoll() (bool, error)
+	// PollOne tries to receive one Ethernet packet and returns true if one was
+	PollOne() (bool, error)
 }
