@@ -7,8 +7,8 @@ import (
 	"machine"
 
 	"github.com/soypat/cyw43439"
-	"github.com/soypat/seqs/stacks"
 	"tinygo.org/x/drivers/netdev"
+	"tinygo.org/x/drivers/netdev/tcpip"
 	"tinygo.org/x/drivers/netlink"
 )
 
@@ -21,15 +21,8 @@ func Probe() (netlink.Netlinker, netdev.Netdever) {
 	}))
 
 	link := cyw43439.NewPicoWDevice(logger)
+	stack := tcpip.New(link, logger, MTU)
+	netdev.UseNetdev(stack)
 
-	dev := stacks.NewPortStack(stacks.PortStackConfig{
-		Link:            link,
-		Logger:          logger,
-		MaxOpenPortsUDP: 1,
-		MaxOpenPortsTCP: 1,
-		MTU:             MTU,
-	})
-	netdev.UseNetdev(dev)
-
-	return link, dev
+	return link, stack
 }
