@@ -102,14 +102,22 @@ func (r *rtl8720dn) connectToAP() error {
 		return netlink.ErrMissingSSID
 	}
 
+	if len(r.params.Passphrase) != 0 && len(r.params.Passphrase) < 8 {
+		return netlink.ErrShortPassphrase
+	}
+
 	if debugging(debugBasic) {
 		fmt.Printf("Connecting to Wifi SSID '%s'...", r.params.Ssid)
 	}
 
 	// Start the connection process
-	securityType := uint32(0x00400004)
+	securityType := uint32(0) // RTW_SECURITY_OPEN
+	if len(r.params.Passphrase) != 0 {
+		securityType = 0x00400004 // RTW_SECURITY_WPA2_AES_PSK
+	}
+
 	result := r.rpc_wifi_connect(r.params.Ssid, r.params.Passphrase, securityType, -1, 0)
-	if result == -1 {
+	if result != 0 {
 		if debugging(debugBasic) {
 			fmt.Printf("FAILED\r\n")
 		}
