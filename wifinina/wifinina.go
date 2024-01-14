@@ -26,11 +26,10 @@ import (
 	"tinygo.org/x/drivers/netlink"
 )
 
-//var _debug debug = debugBasic
+var _debug debug = debugBasic
 
-// var _debug debug = debugBasic | debugNetdev
-var _debug debug = debugBasic | debugNetdev | debugCmd
-
+//var _debug debug = debugBasic | debugNetdev
+//var _debug debug = debugBasic | debugNetdev | debugCmd
 //var _debug debug = debugBasic | debugNetdev | debugCmd | debugDetail
 
 var (
