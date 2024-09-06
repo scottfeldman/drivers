@@ -89,3 +89,16 @@ type Netdever interface {
 	Close(sockfd int) error
 	SetSockOpt(sockfd int, level int, opt int, value interface{}) error
 }
+
+//go:linkname UseSystem syscall.useSystem
+func UseSystem(s Systemer)
+
+type Systemer interface {
+	Socket(domain, typ, proto int) (fd int, err error)
+	CloseOnExec(fd int)
+	SetNonblock(fd int, nonblocking bool) (err error)
+	SetsockoptInt(fd, level, opt int, value int) (err error)
+	Connect(fd int, ip []byte, port uint16) (err error)
+	Write(fd int, buf []byte) (n int, err error)
+	Read(fd int, buf []byte) (n int, err error)
+}

@@ -18,18 +18,24 @@ import (
 	"math/bits"
 	"net"
 	"net/netip"
+	"runtime"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"golang.org/x/net/dns/dnsmessage"
 	"tinygo.org/x/drivers"
 	"tinygo.org/x/drivers/netdev"
 	"tinygo.org/x/drivers/netlink"
 )
 
-var _debug debug = debugBasic
+//var _debug debug = debugBasic
 
-//var _debug debug = debugBasic | debugNetdev
+var _debug debug = debugBasic | debugNetdev
+
 //var _debug debug = debugBasic | debugNetdev | debugCmd
+
 //var _debug debug = debugBasic | debugNetdev | debugCmd | debugDetail
 
 var (
@@ -165,9 +171,13 @@ type hwerr uint8
 type Socket struct {
 	protocol        int
 	clientConnected bool
-	laddr           netip.AddrPort // Set in Bind()
-	raddr           netip.AddrPort // Set in Connect()
-	sock                           // Device socket, as returned from w.getSocket()
+	nonblocking     bool
+	closeonexec     bool
+	dnsClient       bool
+	dnsClientMsg    []byte
+	laddr           netip.AddrPort
+	raddr           netip.AddrPort
+	sock            // Device socket, as returned from w.getSocket()
 }
 
 type Config struct {
@@ -203,6 +213,7 @@ type wifinina struct {
 
 	buf   [64]byte
 	ssids [maxNetworks]string
+	ip    netip.Addr
 
 	params *netlink.ConnectParams
 
@@ -368,9 +379,8 @@ func (w *wifinina) showDevice() {
 	w.deviceShown = true
 }
 
-func (w *wifinina) showIP() {
+func (w *wifinina) showIP(ip, subnet, gateway netip.Addr) {
 	if debugging(debugBasic) {
-		ip, subnet, gateway := w.getIP()
 		fmt.Printf("\r\n")
 		fmt.Printf("DHCP-assigned IP         : %s\r\n", ip)
 		fmt.Printf("DHCP-assigned subnet     : %s\r\n", subnet)
@@ -433,7 +443,11 @@ func (w *wifinina) netConnect(reset bool) error {
 		return netlink.ErrConnectFailed
 	}
 
-	w.showIP()
+	ip, subnet, gateway := w.getIP()
+	w.ip = ip
+
+	w.showIP(ip, subnet, gateway)
+
 	return nil
 }
 
@@ -541,12 +555,7 @@ func (w *wifinina) Addr() (netip.Addr, error) {
 		fmt.Printf("[GetIPAddr]\r\n")
 	}
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	ip, _, _ := w.getIP()
-
-	return ip, nil
+	return w.ip, nil
 }
 
 // newSockfd returns the next available sockfd, or -1 if none available
@@ -573,38 +582,77 @@ func (w *wifinina) Socket(domain int, stype int, protocol int) (int, error) {
 			domain, stype, protocol)
 	}
 
+	// Only supporting IPv4 sockets
 	switch domain {
-	case netdev.AF_INET:
+	case syscall.AF_INET:
 	default:
-		return -1, netdev.ErrFamilyNotSupported
+		return -1, syscall.EINVAL
 	}
 
-	switch {
-	case protocol == netdev.IPPROTO_TCP && stype == netdev.SOCK_STREAM:
-	case protocol == netdev.IPPROTO_TLS && stype == netdev.SOCK_STREAM:
-	case protocol == netdev.IPPROTO_UDP && stype == netdev.SOCK_DGRAM:
+	// Only supporting STREAM/DGRAM TCP/UDP sockets
+	switch stype & ^(syscall.SOCK_NONBLOCK | syscall.SOCK_CLOEXEC) {
+	case syscall.SOCK_STREAM:
+		if protocol == 0 {
+			protocol = syscall.IPPROTO_TCP
+		}
+	case syscall.SOCK_DGRAM:
+		if protocol == 0 {
+			protocol = syscall.IPPROTO_UDP
+		}
 	default:
-		return -1, netdev.ErrProtocolNotSupported
+		return -1, syscall.EPROTONOSUPPORT
+	}
+
+	switch protocol {
+	case syscall.IPPROTO_TCP, syscall.IPPROTO_UDP:
+	default:
+		return -1, syscall.EPROTONOSUPPORT
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	sockfd := w.newSockfd()
-	if sockfd == -1 {
-		return -1, netdev.ErrNoMoreSockets
+	fd := w.newSockfd()
+	if fd == -1 {
+		return -1, syscall.ENFILE
 	}
 
-	w.sockets[sockfd] = &Socket{
-		protocol: protocol,
-		sock:     noSocketAvail,
+	w.sockets[fd] = &Socket{
+		protocol:    protocol,
+		sock:        noSocketAvail,
+		nonblocking: (stype & syscall.SOCK_NONBLOCK) == syscall.SOCK_NONBLOCK,
+		closeonexec: (stype & syscall.SOCK_CLOEXEC) == syscall.SOCK_CLOEXEC,
 	}
 
 	if debugging(debugNetdev) {
-		fmt.Printf("[Socket] <-- sockfd %d\r\n", sockfd)
+		fmt.Printf("[Socket] <-- fd %d\r\n", fd)
 	}
 
-	return sockfd, nil
+	return fd, nil
+}
+
+func (w *wifinina) CloseOnExec(fd int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if socket, ok := w.sockets[fd]; ok {
+		socket.closeonexec = true
+	}
+}
+
+func (w *wifinina) SetNonblock(fd int, nonblocking bool) (err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	socket, ok := w.sockets[fd]
+	if !ok {
+		return syscall.ENOTSOCK
+	}
+	socket.nonblocking = nonblocking
+	return nil
+}
+
+func (w *wifinina) SetsockoptInt(fd, level, opt int, value int) (err error) {
+	// TODO
+	return nil
 }
 
 func (w *wifinina) Bind(sockfd int, ip netip.AddrPort) error {
@@ -618,7 +666,7 @@ func (w *wifinina) Bind(sockfd int, ip netip.AddrPort) error {
 
 	socket, ok := w.sockets[sockfd]
 	if !ok {
-		return netdev.ErrInvalidSocketFd
+		return syscall.ENOTSOCK
 	}
 
 	switch socket.protocol {
@@ -644,61 +692,108 @@ func toUint32(ip [4]byte) uint32 {
 		uint32(ip[3])
 }
 
-func (w *wifinina) Connect(sockfd int, host string, ip netip.AddrPort) error {
+func (w *wifinina) Connect(fd int, ip []byte, port uint16) error {
+
+	runtime.GC()
+
+	addr, _ := netip.AddrFromSlice(ip)
 
 	if debugging(debugNetdev) {
-		if host == "" {
-			fmt.Printf("[Connect] sockfd: %d, addr: %s\r\n", sockfd, ip)
-		} else {
-			fmt.Printf("[Connect] sockfd: %d, host: %s:%d\r\n", sockfd, host, ip.Port())
-		}
+		fmt.Printf("[Connect] fd: %d, ip: %s, port: %d\r\n", fd, addr, port)
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	socket, ok := w.sockets[sockfd]
+	socket, ok := w.sockets[fd]
 	if !ok {
-		return netdev.ErrInvalidSocketFd
+		return syscall.ENOTSOCK
 	}
+
+	// Handle DNS client connection on 127.0.0.1:53, "net" pkg's default NS
+	// address.
+	if addr.IsLoopback() && port == uint16(53) {
+		socket.dnsClient = true
+		return nil
+	}
+
+	socket.sock = w.getSocket()
+	if socket.sock == noSocketAvail {
+		return syscall.EBADF
+	}
+
+	socket.laddr = netip.AddrPortFrom(w.ip, ephemeralPort())
+	socket.raddr = netip.AddrPortFrom(addr, port)
 
 	// Start the connection
 	switch socket.protocol {
 
 	case netdev.IPPROTO_TCP:
-		socket.sock = w.getSocket()
-		if socket.sock == noSocketAvail {
-			return netdev.ErrNoMoreSockets
+		w.startClient(socket.sock, toUint32(addr.As4()), port, protoModeTCP)
+		if w.getClientState(socket.sock) == tcpStateEstablished {
+			socket.clientConnected = true
+			return nil
 		}
-		w.startClient(socket.sock, "", toUint32(ip.Addr().As4()), ip.Port(), protoModeTCP)
-
-	case netdev.IPPROTO_TLS:
-		socket.sock = w.getSocket()
-		if socket.sock == noSocketAvail {
-			return netdev.ErrNoMoreSockets
-		}
-		w.startClient(socket.sock, host, 0, ip.Port(), protoModeTLS)
 
 	case netdev.IPPROTO_UDP:
-		if socket.sock == noSocketAvail {
-			return fmt.Errorf("Must Bind before Connecting")
-		}
-		// See start in sendUDP()
-		socket.raddr = ip
+		w.startServer(socket.sock, socket.laddr.Port(), protoModeUDP)
 		socket.clientConnected = true
 		return nil
 	}
 
-	if w.getClientState(socket.sock) == tcpStateEstablished {
-		socket.clientConnected = true
-		return nil
-	}
+	return fmt.Errorf("Connect to %s:%d failed", addr, port)
+}
 
-	if host == "" {
-		return fmt.Errorf("Connect to %s failed", ip)
+// Use IANA RFC 6335 port range 49152–65535 for ephemeral (dynamic) ports
+var eport = int32(49151)
+
+func ephemeralPort() uint16 {
+	if eport == int32(65535) {
+		eport = int32(49151)
 	} else {
-		return fmt.Errorf("Connect to %s:%d failed", host, ip.Port())
+		eport++
 	}
+	return uint16(eport)
+}
+
+func (w *wifinina) Getsockname(fd int) (ip []byte, port uint16, err error) {
+
+	if debugging(debugNetdev) {
+		fmt.Printf("[Getsockname] fd: %d\r\n", fd)
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	socket, ok := w.sockets[fd]
+	if !ok {
+		return []byte{}, 0, syscall.ENOTSOCK
+	}
+
+	ip = socket.laddr.Addr().AsSlice()
+	port = socket.laddr.Port()
+
+	return
+}
+
+func (w *wifinina) Getpeername(fd int) (ip []byte, port uint16, err error) {
+
+	if debugging(debugNetdev) {
+		fmt.Printf("[Getpeername] fd: %d\r\n", fd)
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	socket, ok := w.sockets[fd]
+	if !ok {
+		return []byte{}, 0, syscall.ENOTSOCK
+	}
+
+	ip = socket.raddr.Addr().AsSlice()
+	port = socket.raddr.Port()
+
+	return
 }
 
 func (w *wifinina) Listen(sockfd int, backlog int) error {
@@ -712,7 +807,7 @@ func (w *wifinina) Listen(sockfd int, backlog int) error {
 
 	socket, ok := w.sockets[sockfd]
 	if !ok {
-		return netdev.ErrInvalidSocketFd
+		return syscall.ENOTSOCK
 	}
 
 	switch socket.protocol {
@@ -741,7 +836,7 @@ func (w *wifinina) Accept(sockfd int) (int, netip.AddrPort, error) {
 
 	socket, ok := w.sockets[sockfd]
 	if !ok {
-		return -1, netip.AddrPort{}, netdev.ErrInvalidSocketFd
+		return -1, netip.AddrPort{}, syscall.ENOTSOCK
 	}
 
 	switch socket.protocol {
@@ -848,7 +943,7 @@ func (w *wifinina) sendTCP(sock sock, buf []byte, deadline time.Time) (int, erro
 func (w *wifinina) sendUDP(sock sock, raddr netip.AddrPort, buf []byte, deadline time.Time) (int, error) {
 
 	// Start a client for each send
-	w.startClient(sock, "", toUint32(raddr.Addr().As4()), raddr.Port(), protoModeUDP)
+	w.startClient(sock, toUint32(raddr.Addr().As4()), raddr.Port(), protoModeUDP)
 
 	// Queue it
 	ok := w.insertDataBuf(sock, buf)
@@ -868,7 +963,7 @@ func (w *wifinina) sendUDP(sock sock, raddr netip.AddrPort, buf []byte, deadline
 func (w *wifinina) sendChunk(sockfd int, buf []byte, deadline time.Time) (int, error) {
 	socket, ok := w.sockets[sockfd]
 	if !ok {
-		return -1, netdev.ErrInvalidSocketFd
+		return -1, syscall.ENOTSOCK
 	}
 
 	// Check if we've timed out
@@ -888,16 +983,8 @@ func (w *wifinina) sendChunk(sockfd int, buf []byte, deadline time.Time) (int, e
 	return -1, netdev.ErrProtocolNotSupported
 }
 
-func (w *wifinina) Send(sockfd int, buf []byte, flags int,
+func (w *wifinina) send(sockfd int, buf []byte, flags int,
 	deadline time.Time) (int, error) {
-
-	if debugging(debugNetdev) {
-		fmt.Printf("[Send] sockfd: %d, len(buf): %d, flags: %d\r\n",
-			sockfd, len(buf), flags)
-	}
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	// Break large bufs into chunks so we don't overrun the hw queue
 
@@ -916,6 +1003,185 @@ func (w *wifinina) Send(sockfd int, buf []byte, flags int,
 	return len(buf), nil
 }
 
+func (w *wifinina) Send(sockfd int, buf []byte, flags int,
+	deadline time.Time) (int, error) {
+
+	if debugging(debugNetdev) {
+		fmt.Printf("[Send] sockfd: %d, len(buf): %d, flags: %d\r\n",
+			sockfd, len(buf), flags)
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.send(sockfd, buf, flags, deadline)
+}
+
+func (w *wifinina) Write(fd int, buf []byte) (n int, err error) {
+
+	if debugging(debugNetdev) {
+		fmt.Printf("[Write] fd: %d, len(buf): %d\r\n", fd, len(buf))
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	socket, ok := w.sockets[fd]
+	if !ok {
+		return -1, syscall.EBADF
+	}
+
+	if socket.dnsClient {
+		socket.dnsClientMsg = buf
+		return len(buf), nil
+	}
+
+	return w.send(fd, buf, 0, time.Time{})
+}
+
+func (w *wifinina) dnsReply(req []byte) ([]byte, error) {
+	var res []byte
+	var p dnsmessage.Parser
+
+	// Parse the request
+	h, err := p.Start(req)
+	if err != nil {
+		return res, err
+	}
+
+	fmt.Printf("Parsed Header: %+v\n", h)
+
+	// Parse the question
+	q, err := p.Question()
+	if err != nil {
+		return res, err
+	}
+
+	fmt.Printf("Parsed Question: %+v\n", q)
+
+	// Resolve the name using wifinina's built-in resolver
+	name := strings.TrimSuffix(q.Name.String(), ".")
+	ips := w.getHostByName(name)
+	if ips == "" {
+		return res, syscall.ENETUNREACH
+	}
+	ip := []byte(ips)
+
+	// Prepare the response header
+	rh := dnsmessage.Header{
+		ID:               h.ID,
+		Response:         true,
+		Authoritative:    true,
+		RecursionDesired: h.RecursionDesired,
+		RCode:            dnsmessage.RCodeSuccess,
+	}
+
+	fmt.Printf("Response Header: %+v\n", rh)
+
+	// Create a response message
+	b := dnsmessage.NewBuilder(nil, rh)
+
+	// Add the question to the response
+	if err := b.StartQuestions(); err != nil {
+		return res, err
+	}
+	if err := b.Question(q); err != nil {
+		return res, err
+	}
+
+	// Add the answer section to the response
+	if err := b.StartAnswers(); err != nil {
+		return res, err
+	}
+
+	// Create an A record
+	ah := dnsmessage.ResourceHeader{
+		Name:  q.Name,
+		Type:  dnsmessage.TypeA,
+		Class: dnsmessage.ClassINET,
+		TTL:   3600,
+	}
+	ab := dnsmessage.AResource{
+		A: [4]byte{ip[0], ip[1], ip[2], ip[3]},
+	}
+
+	fmt.Printf("Answer Header: %+v\n", ah)
+	fmt.Printf("Answer Body: %+v\n", ab)
+
+	// Add the answer to the response
+	if err := b.AResource(ah, ab); err != nil {
+		return res, err
+	}
+
+	res, err = b.Finish()
+	println(len(res), err)
+
+	return res, err
+}
+
+func (w *wifinina) Read(fd int, buf []byte) (n int, err error) {
+
+	runtime.GC()
+
+	if debugging(debugNetdev) {
+		fmt.Printf("[Read] fd: %d, len(buf): %d\r\n", fd, len(buf))
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	socket, ok := w.sockets[fd]
+	if !ok {
+		return -1, syscall.EBADF
+	}
+
+	if socket.dnsClient {
+		res, err := w.dnsReply(socket.dnsClientMsg)
+		if err != nil {
+			return -1, err
+		}
+		copy(buf, res)
+		return len(res), nil
+	}
+
+	// Limit max read size to chunk large read requests
+	var max = len(buf)
+	if max > 1436 {
+		max = 1436
+	}
+
+	// TODO handle non-blocking=false case.  For now, assume
+	// non-blocking=true so we'll not block if there is no data.
+	if !socket.nonblocking {
+		panic("Read on blocking socket")
+	}
+
+	for i := 0; i < 5; i++ {
+		n = int(w.getDataBuf(socket.sock, buf[:max]))
+		if n > 0 {
+			if debugging(debugNetdev) {
+				fmt.Printf("[<--Recv] fd: %d, n: %d\r\n", fd, n)
+			}
+			// Good receive
+			return n, nil
+		}
+
+		// Check if socket went down
+		if w.sockDown(socket) {
+			// return EOF
+			return 0, io.EOF
+		}
+
+		// Unlock while we sleep, so others can make progress
+		w.mu.Unlock()
+		time.Sleep(100 * time.Millisecond)
+		w.mu.Lock()
+	}
+
+	// No data, try again
+	return -1, syscall.EWOULDBLOCK
+}
+
 func (w *wifinina) Recv(sockfd int, buf []byte, flags int,
 	deadline time.Time) (int, error) {
 
@@ -929,7 +1195,7 @@ func (w *wifinina) Recv(sockfd int, buf []byte, flags int,
 
 	socket, ok := w.sockets[sockfd]
 	if !ok {
-		return -1, netdev.ErrInvalidSocketFd
+		return -1, syscall.ENOTSOCK
 	}
 
 	// Limit max read size to chunk large read requests
@@ -986,25 +1252,25 @@ func (w *wifinina) Recv(sockfd int, buf []byte, flags int,
 	}
 }
 
-func (w *wifinina) Close(sockfd int) error {
+func (w *wifinina) Close(fd int) error {
 
 	if debugging(debugNetdev) {
-		fmt.Printf("[Close] sockfd: %d\r\n", sockfd)
+		fmt.Printf("[Close] fd: %d\r\n", fd)
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	socket, ok := w.sockets[sockfd]
+	socket, ok := w.sockets[fd]
 	if !ok {
-		return netdev.ErrInvalidSocketFd
+		return syscall.ENOTSOCK
 	}
 
 	if socket.clientConnected {
 		w.stopClient(socket.sock)
 	}
 
-	delete(w.sockets, sockfd)
+	delete(w.sockets, fd)
 
 	return nil
 }
@@ -1018,30 +1284,20 @@ func (w *wifinina) SetSockOpt(sockfd int, level int, opt int, value interface{})
 	return netdev.ErrNotSupported
 }
 
-func (w *wifinina) startClient(sock sock, hostname string, addr uint32, port uint16, mode uint8) {
+func (w *wifinina) startClient(sock sock, addr uint32, port uint16, mode uint8) {
 	if debugging(debugCmd) {
-		fmt.Printf("    [cmdStartClientTCP] sock: %d, hostname: \"%s\", addr: % 02X, port: %d, mode: %d\r\n",
-			sock, hostname, addr, port, mode)
+		fmt.Printf("    [cmdStartClientTCP] sock: %d, addr: % 02X, port: %d, mode: %d\r\n",
+			sock, addr, port, mode)
 	}
 
 	w.waitForChipReady()
 	w.spiChipSelect()
 
-	if len(hostname) > 0 {
-		w.sendCmd(cmdStartClientTCP, 5)
-		w.sendParamStr(hostname, false)
-	} else {
-		w.sendCmd(cmdStartClientTCP, 4)
-	}
-
+	w.sendCmd(cmdStartClientTCP, 4)
 	w.sendParam32(addr, false)
 	w.sendParam16(port, false)
 	w.sendParam8(uint8(sock), false)
 	w.sendParam8(mode, true)
-
-	if len(hostname) > 0 {
-		w.padTo4(17 + len(hostname))
-	}
 
 	w.spiChipDeselect()
 	w.waitRspCmd1(cmdStartClientTCP)

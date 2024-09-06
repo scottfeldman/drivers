@@ -3,6 +3,7 @@
 package probe
 
 import (
+	"crypto/rand"
 	"machine"
 
 	"tinygo.org/x/drivers/netdev"
@@ -10,7 +11,32 @@ import (
 	"tinygo.org/x/drivers/wifinina"
 )
 
-func Probe() (netlink.Netlinker, netdev.Netdever) {
+func init() {
+	rand.Reader = &reader{}
+}
+
+type reader struct{}
+
+func (r *reader) Read(b []byte) (n int, err error) {
+	if len(b) == 0 {
+		return
+	}
+	var randomByte uint32
+	for i := range b {
+		if i%4 == 0 {
+			randomByte, err = machine.GetRNG()
+			if err != nil {
+				return n, err
+			}
+		} else {
+			randomByte >>= 8
+		}
+		b[i] = byte(randomByte)
+	}
+	return len(b), nil
+}
+
+func Probe() (netlink.Netlinker, netdev.Systemer) {
 
 	cfg := wifinina.Config{
 		// Configure SPI for 8Mhz, Mode 0, MSB First
@@ -27,7 +53,7 @@ func Probe() (netlink.Netlinker, netdev.Netdever) {
 	}
 
 	nina := wifinina.New(&cfg)
-	netdev.UseNetdev(nina)
+	netdev.UseSystem(nina)
 
 	return nina, nina
 }
