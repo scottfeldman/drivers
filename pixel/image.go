@@ -139,14 +139,15 @@ func (img Image[T]) setPixel(index int, c T) {
 	case zeroColor.BitsPerPixel() == 1:
 		// Monochrome.
 		x := index % int(img.width)
-		y := index / int(img.width)
-		offset := x + (y/8)*int(img.width)
+		offset := index / 8
+
 		ptr := (*byte)(unsafe.Add(img.data, offset))
 		if c != zeroColor {
-			*((*byte)(ptr)) |= 1 << uint8(y%8)
+			*((*byte)(ptr)) |= (1 << (7 - uint8(x%8)))
 		} else {
-			*((*byte)(ptr)) &^= 1 << uint8(y%8)
+			*((*byte)(ptr)) &^= (1 << (7 - uint8(x%8)))
 		}
+
 		return
 	case zeroColor.BitsPerPixel()%8 == 0:
 		// Each color starts at a whole byte offset.
@@ -200,9 +201,10 @@ func (img Image[T]) Get(x, y int) T {
 	case zeroColor.BitsPerPixel() == 1:
 		// Monochrome.
 		var c Monochrome
-		offset := x + (y/8)*int(img.width)
+		offset := index / 8
+		bits := index - (offset * 8)
 		ptr := (*byte)(unsafe.Add(img.data, offset))
-		c = (*ptr >> uint8(y%8) & 0x1) == 1
+		c = ((*ptr >> (7 - uint8(bits))) & 0x1) > 0
 		return any(c).(T)
 	case zeroColor.BitsPerPixel()%8 == 0:
 		// Colors like RGB565, RGB888, etc.
