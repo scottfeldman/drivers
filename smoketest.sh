@@ -150,3 +150,6 @@ tinygo build -size short -o ./build/test.hex -target=nano-rp2040 -stack-size 8kb
 tinygo build -size short -o ./build/test.hex -target=wioterminal -stack-size 8kb ./examples/net/webclient/
 tinygo build -size short -o ./build/test.hex -target=wioterminal -stack-size 8kb ./examples/net/webserver/
 tinygo build -size short -o ./build/test.hex -target=wioterminal -stack-size 8kb ./examples/net/mqttclient/paho/
+# network examples (comboat)
+tinygo build -size short -o ./build/test.hex -target=elecrow-rp2040 -stack-size 8kb ./examples/net/tlsclient/
+tinygo build -size short -o ./build/test.hex -target=elecrow-rp2350 -stack-size 8kb ./examples/net/ntpclient/
