@@ -9,7 +9,7 @@
 //     examples/net/webclient (for HTTP)
 //     examples/net/tlsclient (for HTTPS)
 
-//go:build ninafw || wioterminal
+//go:build ninafw || wioterminal || elecrow_rp2040 || elecrow_rp2350
 
 package main
 

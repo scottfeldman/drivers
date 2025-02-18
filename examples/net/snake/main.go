@@ -31,7 +31,7 @@
 // func.  This forces segments to connect and run concurrently, which is a good
 // test of the underlying driver's ability to handle concurrent connections.
 
-//go:build ninafw || wioterminal
+//go:build ninafw || wioterminal || elecrow_rp2040 || elecrow_rp2350
 
 package main
 

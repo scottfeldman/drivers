@@ -4,7 +4,7 @@
 //
 // nc -lk 8080
 
-//go:build ninafw || wioterminal || challenger_rp2040
+//go:build ninafw || wioterminal || challenger_rp2040 || elecrow_rp2040 || elecrow_rp2350
 
 package main
 
