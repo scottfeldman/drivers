@@ -136,6 +136,10 @@ tinygo build -size short -o ./build/test.uf2 -target=pico ./examples/mpu9150/mai
 tinygo build -size short -o ./build/test.hex -target=macropad-rp2040 ./examples/sh1106/macropad_spi
 tinygo build -size short -o ./build/test.hex -target=macropad-rp2040 ./examples/encoders/quadrature-interrupt
 tinygo build -size short -o ./build/test.uf2 -target=pico ./examples/mcp9808/main.go
+tinygo build -size short -o ./build/test.uf2 -target=pico ./examples/tmc2209/main.go
+tinygo build -size short -o ./build/test.hex -target=pico ./examples/tmc5160/main.go
+tinygo build -size short -o ./build/test.uf2 -target=nicenano ./examples/sharpmem/main.go
+tinygo build -size short -o ./build/test.hex -target=feather-nrf52840 ./examples/max6675/main.go
 # network examples (espat)
 tinygo build -size short -o ./build/test.hex -target=challenger-rp2040 ./examples/net/ntpclient/
 # network examples (wifinina)
