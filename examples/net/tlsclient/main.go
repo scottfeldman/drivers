@@ -5,7 +5,7 @@
 //
 // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security
 
-//go:build ninafw || wioterminal || elecrow_rp2040 || elecrow_rp2350
+//go:build ninafw || wioterminal || comboat_fw
 
 package main
 

@@ -17,7 +17,7 @@
 // }
 // ---------------------------------------------------------------------------
 
-//go:build ninafw || wioterminal || elecrow_rp2040 || elecrow_rp2350
+//go:build ninafw || wioterminal || comboat_fw
 
 package main
 

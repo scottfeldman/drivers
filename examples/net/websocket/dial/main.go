@@ -6,7 +6,7 @@
 // Note: It may be necessary to increase the stack size when using
 // "golang.org/x/net/websocket".  Use the -stack-size=4KB command line option.
 
-//go:build ninafw || wioterminal || elecrow_rp2040 || elecrow_rp2350
+//go:build ninafw || wioterminal || comboat_fw
 
 package main
 

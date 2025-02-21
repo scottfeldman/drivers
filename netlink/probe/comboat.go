@@ -1,4 +1,4 @@
-//go:build elecrow_rp2040 || elecrow_rp2350
+//go:build comboat_fw
 
 package probe
 
